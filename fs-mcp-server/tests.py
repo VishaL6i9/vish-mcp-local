@@ -100,14 +100,32 @@ async def run_tests():
         # 8. Fuzzy Match Testing (Whitespace resilience)
         print("Testing fuzzy matching...", end=" ")
         fuzzy_file = "fuzzy.txt"
-        # File has 2-space indentation
         await fs_write_file(fuzzy_file, "  indented line\n  another line")
-        # Agent provides 4-space indentation (More than the file, so NOT a substring)
         fuzzy_edits = [FileEdit(oldText="    indented line", newText="    fixed line")]
         fuzzy_res = await fs_edit_file(fuzzy_file, fuzzy_edits)
         assert "fuzzy match" in fuzzy_res
         final_fuzzy = await fs_read_file(fuzzy_file)
         assert "fixed line" in final_fuzzy
+        print("OK")
+
+        # 9. Agent-Proof Path Extraction (Path inside FileEdit)
+        print("Testing agent-proof path extraction...", end=" ")
+        agent_file = "agent_proof.txt"
+        await fs_write_file(agent_file, "Original Content")
+        
+        # Case A: path missing from top-level, provided in FileEdit
+        agent_edits = [FileEdit(path=agent_file, oldText="Original Content", newText="Agent-Proof Content")]
+        # Call with path=None explicitly
+        res_agent_edit = await fs_edit_file(path=None, edits=agent_edits)
+        assert "Successfully applied" in res_agent_edit
+        assert "Agent-Proof Content" in await fs_read_file(agent_file)
+        
+        # Case B: Preview with path inside FileEdit
+        res_agent_prev = await fs_preview_edit(path=None, edits=agent_edits)
+        # Since we already edited it, we need a new edit to preview
+        agent_edits_2 = [FileEdit(path=agent_file, oldText="Agent-Proof Content", newText="Final Content")]
+        res_agent_prev = await fs_preview_edit(path=None, edits=agent_edits_2)
+        assert "original" in res_agent_prev.lower() or "preview" in res_agent_prev.lower()
         print("OK")
 
         print("\nAll comprehensive tests passed successfully!")

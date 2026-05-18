@@ -36,6 +36,7 @@ mcp = FastMCP("FileSystem")
 class FileEdit(BaseModel):
     oldText: str = Field(..., description="The exact text to be replaced. Must be unique within the file for a surgical edit.")
     newText: str = Field(..., description="The text to replace the oldText with.")
+    path: Optional[str] = Field(None, description="Optional path if provided inside the edit object.")
 
 def detect_line_ending(text: str) -> str:
     """Detects if the text uses CRLF (\r\n) or LF (\n). Defaults to LF."""
@@ -296,12 +297,20 @@ async def fs_write_file(path: str, content: str) -> str:
         return f"Error: {str(e)}"
 
 @mcp.tool()
-async def fs_preview_edit(path: str, edits: List[FileEdit]) -> str:
+async def fs_preview_edit(path: Optional[str] = None, edits: List[FileEdit] = None) -> str:
     """
     Provides a unified diff preview of the proposed surgical edits without applying them.
     """
     try:
-        target_path = resolve_path(path)
+        # Agent-proof path extraction
+        effective_path = path
+        if not effective_path and edits and len(edits) > 0:
+            effective_path = edits[0].path
+        
+        if not effective_path:
+            return "Error: path is required. Please provide the file path as a top-level argument or inside the first edit object."
+
+        target_path = resolve_path(effective_path)
         def _preview():
             with open(target_path, 'rb') as f:
                 raw_bytes = f.read()
@@ -333,14 +342,22 @@ async def fs_preview_edit(path: str, edits: List[FileEdit]) -> str:
         return f"Error: {str(e)}"
 
 @mcp.tool()
-async def fs_edit_file(path: str, edits: List[FileEdit]) -> str:
+async def fs_edit_file(path: Optional[str] = None, edits: List[FileEdit] = None) -> str:
     """
     Performs batch surgical edits on a file. 
     Robustly handles invisible characters (BOM, line endings) and 
     standardizes on LF for internal matching.
     """
     try:
-        target_path = resolve_path(path)
+        # Agent-proof path extraction
+        effective_path = path
+        if not effective_path and edits and len(edits) > 0:
+            effective_path = edits[0].path
+        
+        if not effective_path:
+            return "Error: path is required. Please provide the file path as a top-level argument or inside the first edit object."
+
+        target_path = resolve_path(effective_path)
         def _edit():
             # 1. Read with universal newlines (all line endings become \n)
             with open(target_path, 'r', encoding='utf-8-sig', newline=None) as f:
@@ -361,33 +378,18 @@ async def fs_edit_file(path: str, edits: List[FileEdit]) -> str:
                     continue
                 
                 # Fallback: Try matching by ignoring leading/trailing whitespace on each line
-                # This handles cases where agent misses a tab or trailing space
                 lines = content.splitlines(keepends=True)
                 found_fuzzy = False
                 
-                # Split oldText into lines to match block by block
                 old_lines = old.splitlines(keepends=True)
                 if not old_lines: continue
                 
                 for idx in range(len(lines) - len(old_lines) + 1):
-                    window = "".join(lines[idx : idx + len(old_lines)])
-                    # Compare by stripping whitespace from each line
                     if all(
                         l.strip() == ol.strip() 
                         for l, ol in zip(lines[idx : idx + len(old_lines)], old_lines)
                     ):
-                        # We found a match! Now replace the actual lines in content
-                        # We keep the original indentation of the first line if possible,
-                        # but replace the content.
                         new_lines = new.splitlines(keepends=True)
-                        # If new text is shorter than old, we just replace.
-                        # If longer, it expands.
-                        
-                        # To avoid corrupting the file, we replace the exact range
-                        # We need to calculate the actual start/end bytes/indices
-                        # But since we have the lines, we can just replace in the list.
-                        
-                        # Replace the window with new lines
                         lines[idx : idx + len(old_lines)] = new_lines
                         found_fuzzy = True
                         applied_edits.append(f"'{old[:20]}...' -> '{new[:20]}...' (fuzzy match)")
@@ -398,10 +400,11 @@ async def fs_edit_file(path: str, edits: List[FileEdit]) -> str:
             
             # Write back using LF
             with open(target_path, 'w', encoding='utf-8', newline='\n') as f:
-                f.write("".join(lines) if 'lines' in locals() else content)
+                final_content = "".join(lines) if 'lines' in locals() else content
+                f.write(final_content)
             
             summary = "\n".join(applied_edits)
-            return f"Successfully applied {len(edits)} surgical edits to {path}:\n\n{summary}"
+            return f"Successfully applied {len(edits)} surgical edits to {effective_path}:\n\n{summary}"
             
         return await asyncio.to_thread(_edit)
     except Exception as e:
