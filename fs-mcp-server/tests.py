@@ -76,7 +76,6 @@ async def run_tests():
         long_file = "long.txt"
         lines = [f"L{i+1}" for i in range(10)]
         await fs_write_file(long_file, "\n".join(lines))
-        # Read lines 2 to 3 (1-indexed)
         res_range = await fs_read_file(long_file, start_line=2, end_line=3)
         assert "L2" in res_range and "L3" in res_range
         res_ctx = await fs_read_with_context(long_file, line=5, context_lines=1)
@@ -96,6 +95,19 @@ async def run_tests():
         assert "Successfully applied" in edit_res
         final = await fs_read_file(edit_file)
         assert "Line B-Modified" in final
+        print("OK")
+
+        # 8. Fuzzy Match Testing (Whitespace resilience)
+        print("Testing fuzzy matching...", end=" ")
+        fuzzy_file = "fuzzy.txt"
+        # File has 2-space indentation
+        await fs_write_file(fuzzy_file, "  indented line\n  another line")
+        # Agent provides 4-space indentation (More than the file, so NOT a substring)
+        fuzzy_edits = [FileEdit(oldText="    indented line", newText="    fixed line")]
+        fuzzy_res = await fs_edit_file(fuzzy_file, fuzzy_edits)
+        assert "fuzzy match" in fuzzy_res
+        final_fuzzy = await fs_read_file(fuzzy_file)
+        assert "fixed line" in final_fuzzy
         print("OK")
 
         print("\nAll comprehensive tests passed successfully!")

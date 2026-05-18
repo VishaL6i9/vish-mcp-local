@@ -342,30 +342,63 @@ async def fs_edit_file(path: str, edits: List[FileEdit]) -> str:
     try:
         target_path = resolve_path(path)
         def _edit():
-            with open(target_path, 'rb') as f:
-                raw_bytes = f.read()
-            
-            content_text = raw_bytes.decode('utf-8-sig')
-            original_ending = detect_line_ending(content_text)
-            normalized_content = content_text.replace('\r\n', '\n')
+            # 1. Read with universal newlines (all line endings become \n)
+            with open(target_path, 'r', encoding='utf-8-sig', newline=None) as f:
+                content = f.read()
             
             applied_edits = []
             for i, edit in enumerate(edits):
                 old = edit.oldText.replace('\r\n', '\n')
                 new = edit.newText.replace('\r\n', '\n')
                 
-                count = normalized_content.count(old)
-                if count == 0:
-                    raise ValueError(f"Edit {i}: oldText not found in file. (Exact match required, line endings normalized).")
-                if count > 1:
-                    raise ValueError(f"Edit {i}: oldText found {count} times. Surgical edits require unique text.")
+                # Strict match first
+                if old in content:
+                    count = content.count(old)
+                    if count > 1:
+                        raise ValueError(f"Edit {i}: oldText found {count} times. Surgical edits require unique text.")
+                    content = content.replace(old, new)
+                    applied_edits.append(f"'{old}' -> '{new}'")
+                    continue
                 
-                normalized_content = normalized_content.replace(old, new)
-                applied_edits.append(f"'{old}' -> '{new}'")
+                # Fallback: Try matching by ignoring leading/trailing whitespace on each line
+                # This handles cases where agent misses a tab or trailing space
+                lines = content.splitlines(keepends=True)
+                found_fuzzy = False
+                
+                # Split oldText into lines to match block by block
+                old_lines = old.splitlines(keepends=True)
+                if not old_lines: continue
+                
+                for idx in range(len(lines) - len(old_lines) + 1):
+                    window = "".join(lines[idx : idx + len(old_lines)])
+                    # Compare by stripping whitespace from each line
+                    if all(
+                        l.strip() == ol.strip() 
+                        for l, ol in zip(lines[idx : idx + len(old_lines)], old_lines)
+                    ):
+                        # We found a match! Now replace the actual lines in content
+                        # We keep the original indentation of the first line if possible,
+                        # but replace the content.
+                        new_lines = new.splitlines(keepends=True)
+                        # If new text is shorter than old, we just replace.
+                        # If longer, it expands.
+                        
+                        # To avoid corrupting the file, we replace the exact range
+                        # We need to calculate the actual start/end bytes/indices
+                        # But since we have the lines, we can just replace in the list.
+                        
+                        # Replace the window with new lines
+                        lines[idx : idx + len(old_lines)] = new_lines
+                        found_fuzzy = True
+                        applied_edits.append(f"'{old[:20]}...' -> '{new[:20]}...' (fuzzy match)")
+                        break
+                
+                if not found_fuzzy:
+                    raise ValueError(f"Edit {i}: oldText not found in file. (Tried strict and fuzzy matching).")
             
-            final_content = normalized_content.replace('\n', original_ending)
-            with open(target_path, 'w', encoding='utf-8') as f:
-                f.write(final_content)
+            # Write back using LF
+            with open(target_path, 'w', encoding='utf-8', newline='\n') as f:
+                f.write("".join(lines) if 'lines' in locals() else content)
             
             summary = "\n".join(applied_edits)
             return f"Successfully applied {len(edits)} surgical edits to {path}:\n\n{summary}"
