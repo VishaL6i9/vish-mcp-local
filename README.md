@@ -24,6 +24,7 @@ Modern AI agents often struggle with filesystem interactions due to three main i
 ### Surgical Precision
 - Unique Matching: `fs_edit_file` requires `oldText` to be unique within the file, preventing accidental corruption of similar code blocks.
 - Fuzzy-Surgical Matching: Implements whitespace-resilient matching. If a strict match fails, the server attempts to match by ignoring leading/trailing whitespace, solving the common "agent missed a tab" issue.
+- Agent-Proof Schemas: Robustly handles common agent hallucinations, such as providing the `path` inside the edit object instead of as a top-level argument.
 - Batching: Apply multiple disjoint edits in a single tool call to reduce latency and token usage.
 - Diff Previews: Integrated `fs_preview_edit` allows agents to verify changes via unified diffs before committing to disk.
 
