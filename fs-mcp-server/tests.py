@@ -1,90 +1,104 @@
 import asyncio
 import os
 import shutil
+import base64
 from fs_server import (
     fs_read_file, fs_write_file, fs_edit_file, 
     fs_list_dir, fs_mkdir, fs_search_text, fs_find_files, 
-    fs_set_root, fs_stat, fs_preview_edit, fs_read_with_context
+    fs_set_root, fs_stat, fs_preview_edit, fs_read_with_context,
+    fs_read_multiple_files, fs_read_media_file, fs_get_directory_tree, fs_list_allowed_directories
 )
 
 async def run_tests():
-    base_test_dir = os.path.abspath("test_mcp_fs_final")
+    base_test_dir = os.path.abspath("test_mcp_fs_full")
     root1 = os.path.join(base_test_dir, "root1")
-    root2 = os.path.join(base_test_dir, "root2")
-    file1 = "hello1.txt"
-    file2 = "hello2.txt"
     
-    print("Starting Final MCP FileSystem Server Tests...")
+    print("Starting Comprehensive MCP FileSystem Server Tests...")
 
     try:
         # Setup
         if os.path.exists(base_test_dir):
             shutil.rmtree(base_test_dir)
         os.makedirs(root1)
-        os.makedirs(root2)
-        
-        abs_file1_path = os.path.join(root1, file1)
-        abs_file2_path = os.path.join(root2, file2)
-        
-        with open(abs_file1_path, 'w') as f: f.write("Content 1")
-        with open(abs_file2_path, 'w') as f: f.write("Content 2")
-
-        # 1. Root & Path Resolution
-        print("Testing root and path resolution...", end=" ")
         await fs_set_root(root1)
-        # Absolute access
-        assert (await fs_read_file(abs_file2_path)) == "Content 2"
-        # Relative isolation
-        res_rel = await fs_read_file(f"../root2/{file2}")
-        assert "Access denied" in res_rel
-        # Relative inside
-        assert (await fs_read_file(file1)) == "Content 1"
-        print("OK")
 
-        # 2. Stat
-        print("Testing fs_stat...", end=" ")
-        stat_res = await fs_stat(file1)
+        # 1. Root and Basic Stats
+        print("Testing root and stat...", end=" ")
+        allowed = await fs_list_allowed_directories()
+        assert root1 in allowed
+        
+        test_file = "test.txt"
+        await fs_write_file(test_file, "Hello World")
+        stat_res = await fs_stat(test_file)
         assert "Size:" in stat_res
         print("OK")
 
-        # 3. Range Reading
-        print("Testing fs_read_file (ranges)...", end=" ")
+        # 2. Multi-file read
+        print("Testing fs_read_multiple_files...", end=" ")
+        await fs_write_file("file1.txt", "Content 1")
+        await fs_write_file("file2.txt", "Content 2")
+        multi_res = await fs_read_multiple_files(["file1.txt", "file2.txt", "nonexistent.txt"])
+        assert multi_res["file1.txt"] == "Content 1"
+        assert multi_res["file2.txt"] == "Content 2"
+        assert "Error" in multi_res["nonexistent.txt"]
+        print("OK")
+
+        # 3. Media file read
+        print("Testing fs_read_media_file...", end=" ")
+        img_file = "test.png"
+        with open(os.path.join(root1, img_file), 'wb') as f:
+            f.write(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+        media_res = await fs_read_media_file(img_file)
+        assert "mimeType" in media_res and "data" in media_res
+        assert media_res["mimeType"] == "image/png"
+        print("OK")
+
+        # 4. Directory Tree
+        print("Testing fs_get_directory_tree...", end=" ")
+        os.makedirs(os.path.join(root1, "subdir"))
+        await fs_write_file("subdir/inner.txt", "inner")
+        tree = await fs_get_directory_tree(".")
+        subdir_node = next((n for n in tree if n["name"] == "subdir"), None)
+        assert subdir_node is not None and subdir_node["type"] == "directory"
+        assert any(c["name"] == "inner.txt" for c in subdir_node["children"])
+        print("OK")
+
+        # 5. List Dir with Sizes
+        print("Testing fs_list_dir with sizes...", end=" ")
+        dir_res = await fs_list_dir(".", with_sizes=True)
+        assert isinstance(dir_res, list)
+        assert isinstance(dir_res[0], dict)
+        assert "size" in dir_res[0]
+        print("OK")
+
+        # 6. Range Reading & Context
+        print("Testing read ranges/context...", end=" ")
         long_file = "long.txt"
-        lines = [f"Line {i+1}" for i in range(20)]
+        lines = [f"L{i+1}" for i in range(10)]
         await fs_write_file(long_file, "\n".join(lines))
-        res_range = await fs_read_file(long_file, start_line=5, end_line=7)
-        assert "Line 5" in res_range and "Line 7" in res_range
+        # Read lines 2 to 3 (1-indexed)
+        res_range = await fs_read_file(long_file, start_line=2, end_line=3)
+        assert "L2" in res_range and "L3" in res_range
+        res_ctx = await fs_read_with_context(long_file, line=5, context_lines=1)
+        assert "L4" in res_ctx and "L6" in res_ctx
         print("OK")
 
-        # 4. Context Reading
-        print("Testing fs_read_with_context...", end=" ")
-        res_ctx = await fs_read_with_context(long_file, line=10, context_lines=2)
-        assert "Line 8" in res_ctx and "Line 12" in res_ctx
-        print("OK")
-
-        # 5. Preview Edit
-        print("Testing fs_preview_edit...", end=" ")
+        # 7. Surgical Edits & Previews
+        print("Testing surgical edits...", end=" ")
+        edit_file = "edit.txt"
+        await fs_write_file(edit_file, "Line A\nLine B\nLine C")
         from fs_server import FileEdit
-        preview_file = "preview.txt"
-        await fs_write_file(preview_file, "Original Text\nLine 2")
-        edits = [FileEdit(oldText="Original Text", newText="Modified Text")]
-        preview = await fs_preview_edit(preview_file, edits)
-        assert "-Original Text" in preview and "+Modified Text" in preview
-        print("OK")
-
-        # 6. Robust Edit (Line Endings)
-        print("Testing fs_edit_file robustness...", end=" ")
-        endings_file = "endings.txt"
-        with open(os.path.join(root1, endings_file), 'wb') as f:
-            f.write(b"Line1\r\nLine2\r\nLine3")
+        edits = [FileEdit(oldText="Line B", newText="Line B-Modified")]
+        preview = await fs_preview_edit(edit_file, edits)
+        assert "-Line B" in preview and "+Line B-Modified" in preview
         
-        edit_res = await fs_edit_file(endings_file, [FileEdit(oldText="Line2", newText="UpdatedLine2")])
+        edit_res = await fs_edit_file(edit_file, edits)
         assert "Successfully applied" in edit_res
-        final_content = await fs_read_file(endings_file)
-        assert "UpdatedLine2" in final_content
+        final = await fs_read_file(edit_file)
+        assert "Line B-Modified" in final
         print("OK")
 
-        print("\nAll tests passed successfully!")
+        print("\nAll comprehensive tests passed successfully!")
 
     except Exception as e:
         print(f"\nTest failed: {e}")

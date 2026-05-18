@@ -3,7 +3,9 @@ import asyncio
 import subprocess
 import re
 import difflib
-from typing import List, Dict, Optional, Tuple
+import base64
+import mimetypes
+from typing import List, Dict, Optional, Tuple, Any
 from pydantic import BaseModel, Field
 from mcp.server.fastmcp import FastMCP
 
@@ -55,6 +57,13 @@ async def fs_set_root(path: str) -> str:
         return f"Workspace root successfully set to: {_current_workspace_root}"
     except Exception as e:
         return f"Error setting workspace root: {str(e)}"
+
+@mcp.tool()
+async def fs_list_allowed_directories() -> str:
+    """
+    Returns the current workspace root that the server is allowed to access.
+    """
+    return f"Allowed root: {_current_workspace_root}"
 
 @mcp.tool()
 async def fs_search_text(query: str, path: str = ".", case_sensitive: bool = False) -> str:
@@ -143,6 +152,40 @@ async def fs_read_file(path: str, start_line: Optional[int] = None, end_line: Op
         return f"Error: {str(e)}"
 
 @mcp.tool()
+async def fs_read_multiple_files(paths: List[str]) -> Dict[str, str]:
+    """
+    Reads multiple files simultaneously. Failed reads are reported as errors in the value.
+    """
+    results = {}
+    for path in paths:
+        try:
+            results[path] = await fs_read_file(path)
+        except Exception as e:
+            results[path] = f"Error reading file: {str(e)}"
+    return results
+
+@mcp.tool()
+async def fs_read_media_file(path: str) -> Dict[str, str]:
+    """
+    Reads an image or audio file and returns base64 data with the corresponding MIME type.
+    """
+    try:
+        target_path = resolve_path(path)
+        def _read_media():
+            mime_type, _ = mimetypes.guess_type(target_path)
+            if not mime_type:
+                mime_type = "application/octet-stream"
+            
+            with open(target_path, 'rb') as f:
+                data = f.read()
+                base64_data = base64.b64encode(data).decode('utf-8')
+            return {"mimeType": mime_type, "data": base64_data}
+            
+        return await asyncio.to_thread(_read_media)
+    except Exception as e:
+        return {"error": str(e)}
+
+@mcp.tool()
 async def fs_read_with_context(path: str, line: int, context_lines: int = 5) -> str:
     """
     Reads a specific line from a file with a surrounding context of lines.
@@ -171,6 +214,68 @@ async def fs_stat(path: str) -> str:
         return await asyncio.to_thread(_stat)
     except Exception as e:
         return f"Error: {str(e)}"
+
+@mcp.tool()
+async def fs_list_dir(path: str = ".", with_sizes: bool = False) -> Any:
+    """
+    Lists the contents of a directory. 
+    If with_sizes is True, returns a list of tuples (name, size).
+    """
+    try:
+        target_path = resolve_path(path)
+        def _list():
+            entries = os.listdir(target_path)
+            if not with_sizes:
+                return entries
+            
+            results = []
+            for entry in entries:
+                full_path = os.path.join(target_path, entry)
+                try:
+                    size = os.path.getsize(full_path) if os.path.isfile(full_path) else None
+                except OSError:
+                    size = "Error"
+                results.append({"name": entry, "size": size})
+            return results
+            
+        return await asyncio.to_thread(_list)
+    except Exception as e:
+        return [f"Error: {str(e)}"]
+
+@mcp.tool()
+async def fs_get_directory_tree(path: str, exclude_patterns: List[str] = None) -> List[Dict[str, Any]]:
+    """
+    Get recursive JSON tree structure of directory contents.
+    """
+    try:
+        target_path = resolve_path(path)
+        exclude_patterns = exclude_patterns or []
+        
+        def _build_tree(current_path):
+            tree = []
+            try:
+                entries = os.listdir(current_path)
+            except PermissionError:
+                return tree
+
+            for entry in entries:
+                if any(re.search(p, entry) for p in exclude_patterns):
+                    continue
+                
+                full_path = os.path.join(current_path, entry)
+                is_dir = os.path.isdir(full_path)
+                node = {
+                    "name": entry,
+                    "type": "directory" if is_dir else "file"
+                }
+                if is_dir:
+                    node["children"] = _build_tree(full_path)
+                tree.append(node)
+            return tree
+
+        return await asyncio.to_thread(_build_tree, target_path)
+    except Exception as e:
+        return [f"Error: {str(e)}"]
 
 @mcp.tool()
 async def fs_write_file(path: str, content: str) -> str:
@@ -237,30 +342,30 @@ async def fs_edit_file(path: str, edits: List[FileEdit]) -> str:
     try:
         target_path = resolve_path(path)
         def _edit():
-            # 1. Read with universal newlines (all line endings become \n)
-            # utf-8-sig handles BOM automatically
-            with open(target_path, 'r', encoding='utf-8-sig', newline=None) as f:
-                content = f.read()
+            with open(target_path, 'rb') as f:
+                raw_bytes = f.read()
+            
+            content_text = raw_bytes.decode('utf-8-sig')
+            original_ending = detect_line_ending(content_text)
+            normalized_content = content_text.replace('\r\n', '\n')
             
             applied_edits = []
             for i, edit in enumerate(edits):
-                # Normalize agent's input to LF to match the read content
                 old = edit.oldText.replace('\r\n', '\n')
                 new = edit.newText.replace('\r\n', '\n')
                 
-                count = content.count(old)
+                count = normalized_content.count(old)
                 if count == 0:
                     raise ValueError(f"Edit {i}: oldText not found in file. (Exact match required, line endings normalized).")
                 if count > 1:
                     raise ValueError(f"Edit {i}: oldText found {count} times. Surgical edits require unique text.")
                 
-                content = content.replace(old, new)
+                normalized_content = normalized_content.replace(old, new)
                 applied_edits.append(f"'{old}' -> '{new}'")
             
-            # Write back using LF. This is the modern standard and prevents 
-            # "whole file changed" diffs caused by blind CRLF restoration.
-            with open(target_path, 'w', encoding='utf-8', newline='\n') as f:
-                f.write(content)
+            final_content = normalized_content.replace('\n', original_ending)
+            with open(target_path, 'w', encoding='utf-8') as f:
+                f.write(final_content)
             
             summary = "\n".join(applied_edits)
             return f"Successfully applied {len(edits)} surgical edits to {path}:\n\n{summary}"
@@ -268,18 +373,6 @@ async def fs_edit_file(path: str, edits: List[FileEdit]) -> str:
         return await asyncio.to_thread(_edit)
     except Exception as e:
         return f"Error: {str(e)}"
-
-@mcp.tool()
-async def fs_list_dir(path: str = ".") -> List[str]:
-    """
-    Lists the contents of a directory.
-    """
-    try:
-        target_path = resolve_path(path)
-        files = await asyncio.to_thread(os.listdir, target_path)
-        return files
-    except Exception as e:
-        return [f"Error: {str(e)}"]
 
 @mcp.tool()
 async def fs_mkdir(path: str) -> str:

@@ -72,19 +72,21 @@ Add the server to your MCP settings (e.g., `.pi/agent/mcp.json`):
 
 ## API Reference
 
-| Tool | Description | Key Arguments |
-| :--- | :--- | :--- |
-| `fs_set_root` | Sets the active workspace root. | `path` |
-| `fs_read_file` | Non-caching read. Supports ranges. | `path`, `start_line`, `end_line` |
-| `fs_read_with_context` | Reads a line + surrounding buffer. | `path`, `line`, `context_lines` |
-| `fs_write_file` | Overwrites file with new content. | `path`, `content` |
-| `fs_edit_file` | Performs surgical batch replacements. | `path`, `edits: [{oldText, newText}]` |
-| `fs_preview_edit` | Returns a diff of proposed edits. | `path`, `edits: [{oldText, newText}]` |
-| `fs_search_text` | High-speed text search via `rg`. | `query`, `path`, `case_sensitive` |
-| `fs_find_files` | High-speed file find via `fd`. | `pattern`, `path`, `max_depth` |
-| `fs_list_dir` | Lists directory contents. | `path` |
-| `fs_stat` | Returns file/folder metadata. | `path` |
-| `fs_mkdir` | Creates directories recursively. | `path` |
+### Tools
+
+| Tool | Description | Key Arguments | ReadOnly | Idempotent | Destructive |
+| :--- | :--- | :--- | :---: | :---: | :---: |
+| `fs_set_root` | Sets the active workspace root. | `path` | No | Yes | No |
+| `fs_read_file` | Non-caching read. Supports ranges. | `path`, `start_line`, `end_line` | Yes | - | - |
+| `fs_read_with_context` | Reads a line + surrounding buffer. | `path`, `line`, `context_lines` | Yes | - | - |
+| `fs_write_file` | Overwrites file with new content. | `path`, `content` | No | Yes | Yes |
+| `fs_edit_file` | Performs surgical batch replacements. | `path`, `edits: [{oldText, newText}]` | No | No | Yes |
+| `fs_preview_edit` | Returns a diff of proposed edits. | `path`, `edits: [{oldText, newText}]` | Yes | - | - |
+| `fs_search_text` | High-speed text search via `rg`. | `query`, `path`, `case_sensitive` | Yes | - | - |
+| `fs_find_files` | High-speed file find via `fd`. | `pattern`, `path`, `max_depth` | Yes | - | - |
+| `fs_list_dir` | Lists directory contents. | `path` | Yes | - | - |
+| `fs_stat` | Returns file/folder metadata. | `path` | Yes | - | - |
+| `fs_mkdir` | Creates directories recursively. | `path` | No | Yes | No |
 
 ## Testing
 
